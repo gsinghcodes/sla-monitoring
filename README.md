@@ -8,34 +8,38 @@ A full-stack, serverless SLA monitoring platform that ingests system health-chec
 
 ```text
                     [ Frontend: Next.js / Vercel ]
+
                                   │
                                   │ HTTPS Requests
                                   ▼
+
                     [ API Gateway: AWS HTTP API ]
+
                                   │
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-                    ▼             ▼             ▼
-                [POST]         [GET]         [GET]
-                /upload        /stats        /logs
-                    │             │             │
-                    ▼             ▼             ▼
-              [ Upload ]      [ Stats ]      [ Logs ]
-              [ Lambda ]      [ Lambda ]     [ Lambda ]
-                    │             │             │
-                    └─────────────┼─────────────┘
+                     ┌────────────┼────────────┐
+                     │            │            │
+                     ▼            ▼            ▼
+                  [POST]       [GET]        [GET]
+                  /upload      /stats       /logs
+                     │            │            │
+                     ▼            ▼            ▼
+                [ Upload ]    [ Stats ]    [ Logs ]
+                [ Lambda ]    [ Lambda ]   [ Lambda ]
+                     │            │            │
+                     └────────────┼────────────┘
                                   │
                                   ▼
                        [ PostgreSQL Database ]
-                       [ Supabase / Neon ]
+                         [ Supabase / Neon ]
                                   │
-                    ┌─────────────┼─────────────┐
-                    │             │             │
-                    ▼             ▼             ▼
-                 uploads       services     health_checks
+                         ┌────────┴────────┐
+                         ▼                 ▼
+                      uploads         health_checks
 ```
 
 The application follows a Micro-Lambda pattern, with separate Lambda functions for ingestion, metric aggregation, and log retrieval. The Lambda functions remain stateless, while PostgreSQL serves as the persistent source of truth.
+
+The Lambda functions use FastAPI with Mangum. Lambda deployment packages are built with dependencies targeted for the Linux runtime used by AWS Lambda, allowing the application to be developed on Windows while maintaining runtime-compatible Python dependencies.
 
 ---
 
@@ -54,14 +58,14 @@ The ingestion pipeline:
 5. Classifies HTTP status codes.
 6. Handles missing and invalid latency values.
 7. Removes duplicate monitoring observations.
-8. Persists valid observations to PostgreSQL.
+8. Persists normalized observations to PostgreSQL.
 9. Records ingestion statistics against the upload.
 
 Each uploaded file is associated with an `uploads` record, providing data lineage from a stored monitoring observation back to the source CSV.
 
 ### Metrics Aggregator (`GET /api/stats`)
 
-Runs PostgreSQL aggregation queries over the selected date range and service filters.
+Runs PostgreSQL aggregation queries over the selected observation period and service filters.
 
 The dashboard provides:
 
@@ -84,7 +88,7 @@ Latency is presented as an operational performance metric rather than an SLA com
 
 ### Log Explorer (`GET /api/logs`)
 
-Provides paginated access to the underlying monitoring observations.
+Provides paginated access to the underlying normalized monitoring observations.
 
 Supported filtering includes:
 
@@ -98,15 +102,24 @@ The log view allows engineers to inspect the individual health checks behind the
 
 ### Database Layer
 
-PostgreSQL contains three core entities:
+PostgreSQL contains two core entities:
 
 ```text
 uploads
-services
 health_checks
 ```
 
-`health_checks` stores normalized monitoring observations and maintains a relationship with both the upload that produced the record and the monitored service.
+`uploads` stores metadata about each CSV ingestion, including its unique upload identifier and ingestion statistics.
+
+`health_checks` stores the normalized monitoring observations and maintains a relationship with the upload that produced each observation.
+
+The `health_checks` table uses a uniqueness constraint based on:
+
+```text
+service_id + timestamp + agent + region
+```
+
+This prevents the same monitoring observation from being stored multiple times across repeated uploads.
 
 Indexes are created around the application's primary query patterns, particularly service and timestamp filtering, rather than adding indexes solely for individual columns.
 
@@ -118,7 +131,9 @@ The ingestion pipeline uses explicit status classification:
 
 ```text
 2xx → successful and valid
+
 5xx → failed and valid
+
 999 → invalid monitoring observation
 ```
 
@@ -128,20 +143,25 @@ Latency is normalized to milliseconds:
 
 ```text
 milliseconds → unchanged
+
 seconds      → converted to milliseconds
+
 missing      → NULL
+
 negative     → NULL / invalid latency value
 ```
 
 A missing or invalid latency value does not invalidate an otherwise valid availability observation.
 
-Duplicate observations are removed using the normalized observation identity, considering:
+Duplicate observations are removed using the normalized observation identity:
 
 ```text
 service + timestamp + agent + region
 ```
 
-This prevents duplicate monitoring records from artificially affecting availability or latency calculations while preserving observations from different monitoring agents.
+Agent and region are included because the same service can be monitored by multiple monitoring sources.
+
+Timestamps are normalized to UTC before persistence so that different timestamp representations and timezone offsets can be queried consistently.
 
 ---
 
@@ -153,13 +173,17 @@ The API is divided into three independently deployed Lambda functions:
 
 ```text
 /upload → ingestion Lambda
+
 /stats  → metrics Lambda
+
 /logs   → logs Lambda
 ```
 
 This separates the heavier CSV ingestion workload from the read-oriented dashboard operations while keeping each function small and independently deployable.
 
-A single FastAPI-based Lambda application was also considered. The Micro-Lambda approach was selected because the three operations have sufficiently different responsibilities and can remain independently simple.
+A single FastAPI-based Lambda application was also considered. The Micro-Lambda approach was selected because the three operations have sufficiently different responsibilities and workload characteristics.
+
+Business logic is shared between the functions where appropriate. The separation is primarily at the compute and API-handler level rather than duplicating the application's business logic.
 
 ### 2. Stateless Compute
 
@@ -167,7 +191,49 @@ The Lambda functions do not maintain application state between invocations.
 
 Persistent state is stored in PostgreSQL, allowing any Lambda invocation to query the same source of truth.
 
-### 3. Explicit Data Classification
+### 3. FastAPI + Mangum
+
+FastAPI is used for HTTP application logic, while Mangum acts as the adapter between AWS Lambda events and the ASGI interface expected by FastAPI.
+
+The request flow is:
+
+```text
+API Gateway request
+        ↓
+AWS Lambda
+        ↓
+Mangum
+        ↓
+FastAPI
+        ↓
+Application handler
+        ↓
+Response
+```
+
+This allows the application to use standard FastAPI routing while running inside the Lambda execution environment.
+
+### 4. Lambda-Compatible Dependency Packaging
+
+Development is performed on Windows, while AWS Lambda executes in a Linux environment.
+
+Rather than packaging the Windows virtual environment directly, Python dependencies are installed for the Lambda-compatible Linux platform before constructing the deployment artifact.
+
+The deployment artifact contains the application code and its runtime dependencies at the ZIP root:
+
+```text
+aws-lambda-artifact.zip
+├── app/
+├── fastapi/
+├── mangum/
+├── pydantic/
+├── pydantic_core/
+└── ...
+```
+
+Serverless Framework manages the AWS infrastructure and uses the prebuilt artifact for deployment.
+
+### 5. Explicit Data Classification
 
 Rather than repeatedly interpreting HTTP status codes inside SQL queries, the ingestion layer derives explicit validity and success information when the observation is written.
 
@@ -189,7 +255,7 @@ is_success = false
 
 This keeps the business logic consistent across metric calculations and log inspection.
 
-### 4. Data Lineage
+### 6. Data Lineage
 
 Every upload receives a unique `batch_id`.
 
@@ -203,18 +269,23 @@ duplicate rows
 processed rows
 ```
 
-### 5. Availability as the SLA Measure
+### 7. Availability as the SLA Measure
 
 The dashboard distinguishes between contractual SLA evaluation and operational monitoring.
 
 ```text
 SLA
+
 └── Availability / Uptime
 
+
 Reliability
+
 └── Error rate
 
+
 Performance
+
 ├── P50 latency
 ├── P95 latency
 ├── P99 latency
@@ -245,15 +316,15 @@ Upload Lambda
     ▼
 PostgreSQL
     │
-    ├───────────────┐
-    ▼               ▼
-Stats Lambda    Logs Lambda
-    │               │
-    ▼               ▼
-Aggregated       Raw normalized
-metrics          observations
-    │               │
-    └───────┬───────┘
-            ▼
+    ├──────────────────┐
+    ▼                  ▼
+Stats Lambda       Logs Lambda
+    │                  │
+    ▼                  ▼
+Aggregated          Normalized
+metrics             observations
+    │                  │
+    └────────┬─────────┘
+             ▼
        Next.js Dashboard
 ```

@@ -1,0 +1,18 @@
+org: gsingghhh
+service: sla-monitoring
+
+provider:
+  name: aws
+  region: ap-south-1
+  runtime: python3.13
+
+package:
+  artifact: aws-lambda-artifact.zip
+
+functions:
+  health:
+    handler: app.handlers.health.handler
+    events:
+      - httpApi:
+          method: GET
+          path: /api/health

@@ -16,3 +16,9 @@ functions:
       - httpApi:
           method: GET
           path: /api/health
+  upload:
+    handler: app.handlers.upload.handler
+    events:
+      - httpApi:
+          method: POST
+          path: /api/upload

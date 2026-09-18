@@ -2,6 +2,7 @@ import os
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 
 load_dotenv()
 
@@ -11,10 +12,7 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is not set")
 
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-)
+engine = create_engine(DATABASE_URL, poolclass=NullPool)
 
 
 def test_connection():

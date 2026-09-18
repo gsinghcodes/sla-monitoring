@@ -25,6 +25,11 @@ class Upload(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
+    file_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+    )
     filename: Mapped[str] = mapped_column(String, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

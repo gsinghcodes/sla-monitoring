@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from uuid import UUID
 
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.database.models import HealthCheck, Upload
@@ -73,6 +73,58 @@ def insert_health_checks(
     return len(inserted_ids)
 
 
+def get_health_checks(
+    session: Session,
+    upload_id: UUID | None = None,
+    service_id: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[HealthCheck], int]:
+    conditions = []
+
+    if upload_id is not None:
+        conditions.append(HealthCheck.upload_id == upload_id)
+
+    if service_id is not None:
+        conditions.append(HealthCheck.service_id == service_id)
+
+    if start_date is not None:
+        conditions.append(
+            HealthCheck.timestamp
+            >= datetime.combine(
+                start_date,
+                datetime.min.time(),
+            )
+        )
+
+    if end_date is not None:
+        conditions.append(
+            HealthCheck.timestamp
+            < datetime.combine(
+                end_date + timedelta(days=1),
+                datetime.min.time(),
+            )
+        )
+
+    count_statement = select(func.count(HealthCheck.id)).where(*conditions)
+
+    total = session.execute(count_statement).scalar_one()
+
+    statement = (
+        select(HealthCheck)
+        .where(*conditions)
+        .order_by(HealthCheck.timestamp.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+
+    records = session.execute(statement).scalars().all()
+
+    return records, total
+
+
 def get_upload_by_hash(
     session: Session,
     file_hash: str,
@@ -80,3 +132,11 @@ def get_upload_by_hash(
     statement = select(Upload).where(Upload.file_hash == file_hash)
 
     return session.execute(statement).scalar_one_or_none()
+
+
+def get_uploads(
+    session: Session,
+) -> list[Upload]:
+    statement = select(Upload).order_by(Upload.uploaded_at.desc())
+
+    return session.execute(statement).scalars().all()

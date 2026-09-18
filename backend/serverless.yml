@@ -22,3 +22,9 @@ functions:
       - httpApi:
           method: POST
           path: /api/upload
+  stats:
+    handler: app.handlers.stats.handler
+    events:
+      - httpApi:
+          method: GET
+          path: /api/stats

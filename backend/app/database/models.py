@@ -12,6 +12,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 class Base(DeclarativeBase):
@@ -37,8 +38,10 @@ class Upload(Base):
     )
     status: Mapped[str] = mapped_column(String, nullable=False)
     total_rows: Mapped[int] = mapped_column(Integer, default=0)
-    processed_rows: Mapped[int] = mapped_column(Integer, default=0)
-    invalid_rows: Mapped[int] = mapped_column(Integer, default=0)
+    stored_rows: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+    )
     duplicate_rows: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -65,6 +68,11 @@ class HealthCheck(Base):
     status_code: Mapped[int] = mapped_column(Integer, nullable=False)
     is_valid: Mapped[bool] = mapped_column(Boolean, nullable=False)
     is_success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    data_quality: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
 
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 

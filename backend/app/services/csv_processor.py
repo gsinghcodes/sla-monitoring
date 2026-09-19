@@ -3,20 +3,6 @@ from dataclasses import dataclass, field
 import csv
 
 
-class RowValidationError(ValueError):
-    def __init__(
-        self,
-        field: str,
-        original_value: str,
-        reason: str,
-    ):
-        self.field = field
-        self.original_value = original_value
-        self.reason = reason
-
-        super().__init__(reason)
-
-
 @dataclass
 class NormalizedHealthCheck:
     service_id: str
@@ -28,43 +14,17 @@ class NormalizedHealthCheck:
     latency_ms: float | None
     agent: str
     region: str
-
-
-@dataclass
-class DataWarning:
-    row_number: int
-    field: str
-    original_value: str
-    message: str
-    normalized_value: str
-
-
-@dataclass
-class RejectedRow:
-    row_number: int
-    field: str
-    original_value: str
-    reason: str
+    data_quality: list[dict] | None = None
 
 
 @dataclass
 class ProcessingResult:
     records: list[NormalizedHealthCheck] = field(default_factory=list)
-    warnings: list[DataWarning] = field(default_factory=list)
-    rejected_rows: list[RejectedRow] = field(default_factory=list)
     duplicate_rows: list[int] = field(default_factory=list)
 
     @property
-    def processed_rows(self) -> int:
+    def stored_rows(self) -> int:
         return len(self.records)
-
-    @property
-    def warning_count(self) -> int:
-        return len(self.warnings)
-
-    @property
-    def rejected_count(self) -> int:
-        return len(self.rejected_rows)
 
     @property
     def duplicate_count(self) -> int:
@@ -72,85 +32,90 @@ class ProcessingResult:
 
 
 def normalize_health_check(
-    row: dict, row_number: int
-) -> tuple[NormalizedHealthCheck, list[DataWarning]]:
-    warnings = []
+    row: dict,
+) -> NormalizedHealthCheck:
 
-    is_valid, is_success = classify_status(row["status_code"])
+    data_quality = []
+
+    status_code = int(row["status_code"])
+
+    is_valid, is_success = classify_status(status_code)
 
     if not is_valid:
-        raise RowValidationError(
-            field="status_code",
-            original_value=str(row["status_code"]),
-            reason=f"Invalid status code: {row['status_code']}",
+        data_quality.append(
+            {
+                "field": "status_code",
+                "original_value": str(row["status_code"]),
+                "action": "invalid",
+                "normalized_value": None,
+                "reason": f"Invalid status code: {status_code}",
+            }
         )
 
-    timestamp, timestamp_normalized, timestamp_warning = normalize_timestamp(
+    timestamp, timestamp_normalized, timestamp_reason = normalize_timestamp(
         row["timestamp"]
     )
 
     if timestamp_normalized:
-        warnings.append(
-            DataWarning(
-                row_number=row_number,
-                field="timestamp",
-                original_value=str(row["timestamp"]),
-                message=timestamp_warning,
-                normalized_value=timestamp.isoformat(),
-            )
+        data_quality.append(
+            {
+                "field": "timestamp",
+                "original_value": str(row["timestamp"]),
+                "action": "normalized",
+                "normalized_value": timestamp.isoformat(),
+                "reason": timestamp_reason,
+            }
         )
 
     try:
-        latency_ms, latency_normalized, latency_warning = normalize_latency(
+        latency_ms, latency_normalized, latency_reason = normalize_latency(
             row.get("latency"),
             row.get("latency_unit"),
         )
     except ValueError as error:
-        raise RowValidationError(
-            field="latency",
-            original_value=str(row.get("latency")),
-            reason=str(error),
-        ) from error
+        latency_ms = None
+        is_valid = False
 
-    if latency_normalized:
-        warnings.append(
-            DataWarning(
-                row_number=row_number,
-                field="latency",
-                original_value=f"{row.get('latency')} {row.get('latency_unit')}",
-                message=latency_warning,
-                normalized_value=f"{latency_ms} ms",
-            )
+        data_quality.append(
+            {
+                "field": "latency",
+                "original_value": str(row.get("latency")),
+                "action": "invalid",
+                "normalized_value": None,
+                "reason": str(error),
+            }
         )
+    else:
+        if latency_normalized:
+            data_quality.append(
+                {
+                    "field": "latency",
+                    "original_value": (
+                        f"{row.get('latency')} " f"{row.get('latency_unit')}"
+                    ),
+                    "action": "normalized",
+                    "normalized_value": f"{latency_ms} ms",
+                    "reason": latency_reason,
+                }
+            )
 
-    record = NormalizedHealthCheck(
+    return NormalizedHealthCheck(
         service_id=str(row["service_id"]).strip(),
         service_name=str(row["service_name"]).strip(),
         timestamp=timestamp,
-        status_code=int(row["status_code"]),
+        status_code=status_code,
         is_valid=is_valid,
         is_success=is_success,
         latency_ms=latency_ms,
         agent=str(row["agent"]).strip(),
         region=str(row["region"]).strip(),
+        data_quality=data_quality or None,
     )
-
-    return record, warnings
 
 
 def normalize_timestamp(
     value: str | int | float,
 ) -> tuple[datetime, bool, str | None]:
-    """
-    Convert supported timestamp formats into UTC.
-
-    Returns:
-        (
-            normalized_timestamp,
-            was_normalized,
-            warning_message,
-        )
-    """
 
     if isinstance(value, (int, float)):
         timestamp = datetime.fromtimestamp(
@@ -224,18 +189,18 @@ def normalize_latency(
         return latency, False, None
 
     if normalized_unit == "s":
-        return latency * 1000, True, "Converted seconds to milliseconds"
+        return (
+            latency * 1000,
+            True,
+            "Converted seconds to milliseconds",
+        )
 
     raise ValueError(f"Unsupported latency unit: {unit}")
 
 
-def classify_status(status_code: str | int) -> tuple[bool, bool]:
-    """
-    Classify an HTTP status code.
-
-    Returns:
-        (is_valid, is_success)
-    """
+def classify_status(
+    status_code: str | int,
+) -> tuple[bool, bool]:
 
     status = int(status_code)
 
@@ -248,12 +213,20 @@ def classify_status(status_code: str | int) -> tuple[bool, bool]:
     return False, False
 
 
-def process_csv(file_path: str) -> ProcessingResult:
-    result = ProcessingResult()
+def process_csv(
+    file_path: str,
+) -> ProcessingResult:
 
+    result = ProcessingResult()
     seen_keys = set()
 
-    with open(file_path, "r", newline="", encoding="utf-8") as file:
+    with open(
+        file_path,
+        "r",
+        newline="",
+        encoding="utf-8",
+    ) as file:
+
         reader = csv.DictReader(file)
 
         required_columns = {
@@ -269,15 +242,15 @@ def process_csv(file_path: str) -> ProcessingResult:
 
         if missing_columns:
             raise ValueError(
-                f"Missing required columns: {', '.join(sorted(missing_columns))}"
+                f"Missing required columns: " f"{', '.join(sorted(missing_columns))}"
             )
 
-        for row_number, row in enumerate(reader, start=2):
+        for row_number, row in enumerate(
+            reader,
+            start=2,
+        ):
             try:
-                record, warnings = normalize_health_check(
-                    row,
-                    row_number,
-                )
+                record = normalize_health_check(row)
 
                 duplicate_key = (
                     record.service_id,
@@ -291,28 +264,15 @@ def process_csv(file_path: str) -> ProcessingResult:
                     continue
 
                 seen_keys.add(duplicate_key)
-
                 result.records.append(record)
-                result.warnings.extend(warnings)
 
-            except RowValidationError as error:
-                result.rejected_rows.append(
-                    RejectedRow(
-                        row_number=row_number,
-                        field=error.field,
-                        original_value=error.original_value,
-                        reason=error.reason,
-                    )
-                )
-
-            except (ValueError, TypeError, OverflowError) as error:
-                result.rejected_rows.append(
-                    RejectedRow(
-                        row_number=row_number,
-                        field="row",
-                        original_value=str(row),
-                        reason=str(error),
-                    )
-                )
+            except (
+                ValueError,
+                TypeError,
+                OverflowError,
+            ) as error:
+                raise ValueError(
+                    f"Unable to process row {row_number}: {error}"
+                ) from error
 
     return result

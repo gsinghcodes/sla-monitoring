@@ -5,6 +5,18 @@ provider:
   name: aws
   region: ap-south-1
   runtime: python3.13
+  timeout: 30
+
+  httpApi:
+    cors:
+      allowedOrigins:
+        - http://localhost:3000
+      allowedMethods:
+        - GET
+        - POST
+        - OPTIONS
+      allowedHeaders:
+        - Content-Type
 
 package:
   artifact: aws-lambda-artifact.zip
@@ -28,3 +40,15 @@ functions:
       - httpApi:
           method: GET
           path: /api/stats
+  logs:
+    handler: app.handlers.logs.handler
+    events:
+      - httpApi:
+          method: POST
+          path: /api/logs
+  uploads:
+    handler: app.handlers.uploads.handler
+    events:
+      - httpApi:
+          method: GET
+          path: /api/uploads

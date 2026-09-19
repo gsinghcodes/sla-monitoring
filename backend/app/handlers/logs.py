@@ -56,6 +56,7 @@ def get_logs(request: LogsRequest):
                 "latency_ms": record.latency_ms,
                 "agent": record.agent,
                 "region": record.region,
+                "data_quality": record.data_quality,
             }
             for record in records
         ],

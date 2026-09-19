@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 from mangum import Mangum
@@ -12,6 +13,7 @@ app = FastAPI()
 
 @app.get("/api/stats")
 def get_stats(
+    upload_id: UUID | None = Query(default=None),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
 ):
@@ -24,6 +26,7 @@ def get_stats(
     with Session(engine) as session:
         return calculate_stats(
             session=session,
+            upload_id=upload_id,
             start_date=start_date,
             end_date=end_date,
         )

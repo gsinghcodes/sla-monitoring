@@ -21,8 +21,7 @@ def get_upload_list():
                 "uploaded_at": upload.uploaded_at,
                 "status": upload.status,
                 "total_rows": upload.total_rows,
-                "processed_rows": upload.processed_rows,
-                "rejected_rows": upload.invalid_rows,
+                "stored_rows": upload.stored_rows,
                 "duplicate_rows": upload.duplicate_rows,
             }
             for upload in uploads

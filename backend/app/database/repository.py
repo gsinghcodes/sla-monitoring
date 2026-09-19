@@ -21,11 +21,8 @@ def create_upload(
         file_hash=file_hash,
         uploaded_at=uploaded_at,
         status="completed",
-        total_rows=(
-            result.processed_rows + result.rejected_count + result.duplicate_count
-        ),
-        processed_rows=result.processed_rows,
-        invalid_rows=result.rejected_count,
+        total_rows=(result.stored_rows + result.duplicate_count),
+        stored_rows=result.stored_rows,
         duplicate_rows=result.duplicate_count,
     )
 
@@ -43,34 +40,41 @@ def insert_health_checks(
     if not records:
         return 0
 
-    values = [
-        {
-            "upload_id": upload_id,
-            "service_id": record.service_id,
-            "service_name": record.service_name,
-            "timestamp": record.timestamp,
-            "status_code": record.status_code,
-            "is_valid": record.is_valid,
-            "is_success": record.is_success,
-            "latency_ms": record.latency_ms,
-            "agent": record.agent,
-            "region": record.region,
-        }
-        for record in records
-    ]
+    batch_size = 500
+    inserted_count = 0
 
-    statement = (
-        insert(HealthCheck)
-        .values(values)
-        .on_conflict_do_nothing(constraint="uq_health_check_observation")
-        .returning(HealthCheck.id)
-    )
+    for start in range(0, len(records), batch_size):
+        batch = records[start : start + batch_size]
 
-    result = session.execute(statement)
+        values = [
+            {
+                "upload_id": upload_id,
+                "service_id": record.service_id,
+                "service_name": record.service_name,
+                "timestamp": record.timestamp,
+                "status_code": record.status_code,
+                "is_valid": record.is_valid,
+                "is_success": record.is_success,
+                "latency_ms": record.latency_ms,
+                "agent": record.agent,
+                "region": record.region,
+                "data_quality": record.data_quality,
+            }
+            for record in batch
+        ]
 
-    inserted_ids = result.scalars().all()
+        statement = (
+            insert(HealthCheck)
+            .values(values)
+            .on_conflict_do_nothing(constraint="uq_health_check_observation")
+            .returning(HealthCheck.id)
+        )
 
-    return len(inserted_ids)
+        result = session.execute(statement)
+
+        inserted_count += len(result.scalars().all())
+
+    return inserted_count
 
 
 def get_health_checks(

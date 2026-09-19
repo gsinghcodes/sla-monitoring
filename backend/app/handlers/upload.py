@@ -60,12 +60,9 @@ async def upload_csv(file: UploadFile = File(...)):
             "upload_id": str(result["upload_id"]),
             "filename": file.filename,
             "total_rows": (
-                processing_result.processed_rows
-                + processing_result.rejected_count
-                + processing_result.duplicate_count
+                processing_result.stored_rows + processing_result.duplicate_count
             ),
-            "processed_rows": processing_result.processed_rows,
-            "rejected_rows": processing_result.rejected_count,
+            "stored_rows": processing_result.stored_rows,
             "duplicate_rows": processing_result.duplicate_count,
             "inserted_rows": result["inserted_count"],
         }

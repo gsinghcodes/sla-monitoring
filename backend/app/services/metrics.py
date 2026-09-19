@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,11 +9,15 @@ from app.database.models import HealthCheck
 SLA_AVAILABILITY_THRESHOLD = 99.9
 
 
-def apply_date_filter(
+def apply_filters(
     statement,
+    upload_id: UUID | None,
     start_date: date | None,
     end_date: date | None,
 ):
+    if upload_id is not None:
+        statement = statement.where(HealthCheck.upload_id == upload_id)
+
     if start_date is not None:
         statement = statement.where(
             HealthCheck.timestamp
@@ -38,23 +43,26 @@ def apply_date_filter(
 
 def calculate_stats(
     session: Session,
+    upload_id: UUID | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict:
     total_checks = session.execute(
-        apply_date_filter(
+        apply_filters(
             select(func.count(HealthCheck.id)).where(HealthCheck.is_valid.is_(True)),
+            upload_id,
             start_date,
             end_date,
         )
     ).scalar_one()
 
     successful_checks = session.execute(
-        apply_date_filter(
+        apply_filters(
             select(func.count(HealthCheck.id)).where(
                 HealthCheck.is_valid.is_(True),
                 HealthCheck.is_success.is_(True),
             ),
+            upload_id,
             start_date,
             end_date,
         )
@@ -68,11 +76,12 @@ def calculate_stats(
 
     latency_values = (
         session.execute(
-            apply_date_filter(
+            apply_filters(
                 select(HealthCheck.latency_ms).where(
                     HealthCheck.is_valid.is_(True),
                     HealthCheck.latency_ms.is_not(None),
                 ),
+                upload_id,
                 start_date,
                 end_date,
             )
@@ -91,9 +100,10 @@ def calculate_stats(
     }
 
     service_stats = calculate_service_stats(
-        session,
-        start_date,
-        end_date,
+        session=session,
+        upload_id=upload_id,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     return {
@@ -111,17 +121,19 @@ def calculate_stats(
 
 def calculate_service_stats(
     session: Session,
+    upload_id: UUID | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict]:
     services = session.execute(
-        apply_date_filter(
+        apply_filters(
             select(
                 HealthCheck.service_id,
                 HealthCheck.service_name,
             )
             .distinct()
             .order_by(HealthCheck.service_name),
+            upload_id,
             start_date,
             end_date,
         )
@@ -131,23 +143,25 @@ def calculate_service_stats(
 
     for service_id, service_name in services:
         total_checks = session.execute(
-            apply_date_filter(
+            apply_filters(
                 select(func.count(HealthCheck.id)).where(
                     HealthCheck.service_id == service_id,
                     HealthCheck.is_valid.is_(True),
                 ),
+                upload_id,
                 start_date,
                 end_date,
             )
         ).scalar_one()
 
         successful_checks = session.execute(
-            apply_date_filter(
+            apply_filters(
                 select(func.count(HealthCheck.id)).where(
                     HealthCheck.service_id == service_id,
                     HealthCheck.is_valid.is_(True),
                     HealthCheck.is_success.is_(True),
                 ),
+                upload_id,
                 start_date,
                 end_date,
             )
@@ -159,12 +173,13 @@ def calculate_service_stats(
 
         latencies = (
             session.execute(
-                apply_date_filter(
+                apply_filters(
                     select(HealthCheck.latency_ms).where(
                         HealthCheck.service_id == service_id,
                         HealthCheck.is_valid.is_(True),
                         HealthCheck.latency_ms.is_not(None),
                     ),
+                    upload_id,
                     start_date,
                     end_date,
                 )
@@ -179,7 +194,10 @@ def calculate_service_stats(
             {
                 "service_id": service_id,
                 "service_name": service_name,
-                "availability_percent": round(availability, 3),
+                "availability_percent": round(
+                    availability,
+                    3,
+                ),
                 "error_rate_percent": (
                     round(
                         failed_checks / total_checks * 100,
